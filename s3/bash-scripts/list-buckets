@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# list-buckets.sh — list the 5 most recently created S3 buckets
+
+set -euo pipefail
+export AWS_PAGER=""
+
+count=5
+
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+command -v jq  >/dev/null 2>&1 || { echo "jq not found" >&2; exit 1; }
+
+{
+  echo -e "Name\tRegion\tCreation Date"
+
+  aws s3api list-buckets --output json \
+    | jq -r --argjson n "$count" \
+        '.Buckets | sort_by(.CreationDate) | reverse | .[0:$n] | .[]
+         | [.Name, .CreationDate] | @tsv' \
+    | while IFS=$'\t' read -r name created; do
+        region="$(aws s3api get-bucket-location --bucket "$name" --output text)"
+        [[ "$region" == "None" || -z "$region" ]] && region="us-east-1"
+        echo -e "${name}\t${region}\t${created}"
+      done
+} | column -t -s $'\t'
