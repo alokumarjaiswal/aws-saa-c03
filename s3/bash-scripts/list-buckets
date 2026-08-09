@@ -1,7 +1,9 @@
-#!/usr/bin/env bash
+#! /usr/bin/env bash
 #
 # list-buckets.sh — list the 5 most recently created S3 buckets
 
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -x
 set -euo pipefail
 export AWS_PAGER=""
 
