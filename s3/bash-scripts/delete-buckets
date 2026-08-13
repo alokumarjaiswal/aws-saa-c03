@@ -1,0 +1,45 @@
+#! /usr/bin/env bash
+#
+# delete-buckets — delete one or more S3 buckets (must be empty)
+#
+# Usage: ./delete-buckets bucket1 bucket2 ...
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+set -xeuo pipefail
+export AWS_PAGER=""
+
+[[ $# -lt 1 ]] && { echo "Usage: $0 bucket1 bucket2 ..." >&2; exit 1; }
+
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+
+buckets=("$@")
+
+echo "The following buckets will be permanently deleted:"
+printf '  - %s\n' "${buckets[@]}"
+read -r -p "Proceed? [y/N] " reply
+[[ "$reply" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+
+failed=()
+for bucket in "${buckets[@]}"; do
+  if error_output="$(aws s3api delete-bucket --bucket "$bucket" 2>&1)"; then
+    echo "Deleted: $bucket"
+  else
+    error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+    echo "ERROR: failed to delete '$bucket'" >&2
+    if [[ -n "$error_output" ]]; then
+      echo "Reason: $error_output" >&2
+    else
+      echo "Reason unknown. Common causes: bucket not empty, bucket doesn't exist, insufficient permissions, or bucket name/region mismatch." >&2
+    fi
+    failed+=("$bucket")
+  fi
+done
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "" >&2
+  echo "Failed/skipped buckets:" >&2
+  printf '  - %s\n' "${failed[@]}" >&2
+  exit 1
+fi
+
+echo "All buckets deleted successfully."
