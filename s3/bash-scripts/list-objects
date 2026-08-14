@@ -1,0 +1,37 @@
+#! /usr/bin/env bash
+#
+# list-objects — list objects in an S3 bucket: key, content-type, size, last modified
+#
+# Usage: ./list-objects <bucket>
+#
+# Note: shows up to the first 1000 objects (one S3 page). Fetches
+# Content-Type via a separate head-object call per object, so this
+# is slower the more objects the bucket has.
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+set -xeuo pipefail
+export AWS_PAGER=""
+
+[[ $# -lt 1 ]] && { echo "Usage: $0 <bucket>" >&2; exit 1; }
+bucket="$1"
+
+command -v aws     >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+command -v jq      >/dev/null 2>&1 || { echo "jq not found" >&2; exit 1; }
+command -v numfmt  >/dev/null 2>&1 || { echo "numfmt not found (coreutils)" >&2; exit 1; }
+
+{
+  echo -e "Key\tType\tSize\tLast Modified"
+
+  aws s3api list-objects-v2 --bucket "$bucket" --output json \
+    | jq -r '.Contents // [] | .[] | [.Key, .Size, .LastModified] | @tsv' \
+    | while IFS=$'\t' read -r key size modified; do
+        content_type="$(aws s3api head-object --bucket "$bucket" --key "$key" \
+                          --query 'ContentType' --output text 2>/dev/null)"
+        [[ -z "$content_type" || "$content_type" == "None" ]] && content_type="unknown"
+
+        human_size="$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null)"
+        [[ -z "$human_size" ]] && human_size="${size}B"
+
+        echo -e "${key}\t${content_type}\t${human_size}\t${modified}"
+      done
+} | column -t -s $'\t'
