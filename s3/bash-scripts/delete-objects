@@ -1,0 +1,56 @@
+#! /usr/bin/env bash
+#
+# delete-objects — delete all objects in an S3 bucket (current objects only,
+# up to 1000; does not touch old versions/delete markers on versioned buckets)
+#
+# Usage: ./delete-objects <bucket>
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+set -xeuo pipefail
+export AWS_PAGER=""
+
+[[ $# -lt 1 ]] && { echo "Usage: $0 <bucket>" >&2; exit 1; }
+bucket="$1"
+
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+command -v jq  >/dev/null 2>&1 || { echo "jq not found" >&2; exit 1; }
+
+tmpfile="$(mktemp)"
+trap 'rm -f "$tmpfile"' EXIT
+
+objects_json="$(aws s3api list-objects-v2 --bucket "$bucket" --output json)"
+count="$(jq '.Contents // [] | length' <<< "$objects_json")"
+
+if [[ "$count" -eq 0 ]]; then
+  echo "Bucket '$bucket' is already empty (or does not exist)."
+  exit 0
+fi
+
+echo "This will permanently delete $count object(s) from bucket '$bucket'."
+read -r -p "Proceed? [y/N] " reply
+[[ "$reply" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+
+jq '{Objects: [.Contents[] | {Key: .Key}], Quiet: false}' <<< "$objects_json" > "$tmpfile"
+
+response="$(aws s3api delete-objects --bucket "$bucket" --delete "file://$tmpfile" --output json)"
+
+if [[ -z "$response" ]]; then
+  echo "ERROR: got no response from delete-objects — cannot confirm whether anything was deleted." >&2
+  exit 1
+fi
+
+counts=$(jq -r '[(.Deleted // [] | length), (.Errors // [] | length)] | @tsv' <<< "$response")
+IFS=$'\t' read -r deleted errors <<< "$counts"
+
+if [[ "$errors" -gt 0 ]]; then
+  echo "ERROR: $errors object(s) failed to delete:" >&2
+  jq -r '.Errors[] | "  - \(.Key): \(.Message)"' <<< "$response" >&2
+  exit 1
+fi
+
+if [[ "$deleted" -ne "$count" ]]; then
+  echo "WARNING: expected to delete $count object(s) but response confirms only $deleted." >&2
+  exit 1
+fi
+
+echo "Deleted $deleted object(s) from '$bucket'."
