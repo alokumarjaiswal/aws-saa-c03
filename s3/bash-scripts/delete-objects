@@ -6,7 +6,8 @@
 # Usage: ./delete-objects <bucket>
 
 export PS4='+ ${BASH_SOURCE}:${LINENO}: '
-set -xeuo pipefail
+# set -xeuo pipefail
+set -euo pipefail
 export AWS_PAGER=""
 
 [[ $# -lt 1 ]] && { echo "Usage: $0 <bucket>" >&2; exit 1; }

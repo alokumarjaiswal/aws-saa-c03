@@ -1,0 +1,62 @@
+#! /usr/bin/env bash
+#
+# create-buckets — create one or more S3 buckets in a specific region (default region: ap-south-1)
+#
+# Usage: ./create-buckets [-r region] bucket1 [bucket2 ...]
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
+set -euo pipefail
+export AWS_PAGER=""
+
+region="ap-south-1"
+while getopts ":r:h" opt; do
+  case "$opt" in
+    r) region="$OPTARG" ;;
+    h) echo "Usage: $0 [-r region] bucket1 [bucket2 ...]"; exit 0 ;;
+    \?) echo "Unknown option: -$OPTARG" >&2; exit 1 ;;
+    :) echo "Option -$OPTARG requires an argument" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[[ $# -lt 1 ]] && { echo "Usage: $0 [-r region] bucket1 [bucket2 ...]" >&2; exit 1; }
+
+command -v aws     >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+command -v column  >/dev/null 2>&1 || { echo "column not found" >&2; exit 1; }
+
+# us-east-1 is a special case: passing a LocationConstraint for it is an
+# error, whereas every other region requires one.
+if [[ "$region" == "us-east-1" ]]; then
+  region_args=(--region "$region")
+else
+  region_args=(--region "$region" --create-bucket-configuration "LocationConstraint=$region")
+fi
+
+created=()
+failed=()
+for bucket in "$@"; do
+  if error_output="$(aws s3api create-bucket --bucket "$bucket" "${region_args[@]}" 2>&1)"; then
+    created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    created+=("${bucket}"$'\t'"${region}"$'\t'"${created_at}")
+  else
+    error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+    echo "ERROR: failed to create '$bucket'" >&2
+    echo "Reason: $error_output" >&2
+    failed+=("$bucket")
+  fi
+done
+
+if [[ ${#created[@]} -gt 0 ]]; then
+  {
+    echo -e "Name\tRegion\tCreation Date"
+    printf '%s\n' "${created[@]}"
+  } | column -t -s $'\t'
+fi
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "" >&2
+  echo "Failed buckets:" >&2
+  printf '  - %s\n' "${failed[@]}" >&2
+  exit 1
+fi

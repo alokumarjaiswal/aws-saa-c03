@@ -2,13 +2,14 @@
 #
 # delete-buckets — delete one or more S3 buckets (must be empty)
 #
-# Usage: ./delete-buckets bucket1 bucket2 ...
+# Usage: ./delete-buckets bucket1 [bucket2 ...]
 
 export PS4='+ ${BASH_SOURCE}:${LINENO}: '
-set -xeuo pipefail
+# set -xeuo pipefail
+set -euo pipefail
 export AWS_PAGER=""
 
-[[ $# -lt 1 ]] && { echo "Usage: $0 bucket1 bucket2 ..." >&2; exit 1; }
+[[ $# -lt 1 ]] && { echo "Usage: $0 bucket1 [bucket2 ...]" >&2; exit 1; }
 
 command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
 
