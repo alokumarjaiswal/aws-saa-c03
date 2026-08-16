@@ -2,8 +2,7 @@
 #
 # put-objects — upload one or more files and/or folders to S3, optionally with a prefix.
 #
-# Usage:
-#   ./put-objects [-p prefix] <bucket> <path1> [path2 ...]
+# Usage: ./put-objects [-p prefix] <bucket> <path1> [path2 ...]
 #
 # - Any number of files and/or folders can be given, in any mix.
 # - Folder uploads are flattened: every file (at any nesting depth)
@@ -44,7 +43,7 @@ command -v numfmt >/dev/null 2>&1 || { echo "numfmt not found (coreutils)" >&2; 
 uploaded=()
 failed=()
 
-upload_one() {
+upload_one_file() {
   local filepath="$1"
   local key="${prefix}$(basename "$filepath")"
 
@@ -67,10 +66,10 @@ upload_one() {
 for path in "${paths[@]}"; do
   path="${path%/}"
   if [[ -f "$path" ]]; then
-    upload_one "$path"
+    upload_one_file "$path"
   elif [[ -d "$path" ]]; then
     while IFS= read -r -d '' filepath; do
-      upload_one "$filepath"
+      upload_one_file "$filepath"
     done < <(find "$path" -type f -print0)
   else
     echo "ERROR: '$path' is not a valid file or directory" >&2

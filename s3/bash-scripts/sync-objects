@@ -1,0 +1,50 @@
+#! /usr/bin/env bash
+#
+# sync-objects — mirror one location to another using aws s3 sync
+# (true sync: adds/updates changed files AND deletes anything in the
+# destination that no longer exists in the source).
+#
+# <source> and <destination> can each be EITHER a local folder path
+# OR an s3://bucket[/prefix] URI — so this handles local-to-S3,
+# S3-to-S3 (server-side copy, doesn't pass through your machine), or
+# S3-to-local.
+#
+# Usage: ./sync-objects <source> <destination>
+#   e.g. ./sync-objects ./my-folder s3://my-bucket/prefix
+#        ./sync-objects s3://bucket-a/prefix s3://bucket-b/prefix
+#        ./sync-objects s3://my-bucket/prefix ./my-folder
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
+set -euo pipefail
+export AWS_PAGER=""
+
+[[ $# -lt 2 ]] && { echo "Usage: $0 <source> <destination>" >&2; exit 1; }
+
+source_loc="$1"
+dest_loc="$2"
+
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+
+is_s3_uri() { [[ "$1" == s3://* ]]; }
+
+# Only validate as a local directory if it's not an s3:// URI.
+if ! is_s3_uri "$source_loc" && [[ ! -d "$source_loc" ]]; then
+  echo "ERROR: '$source_loc' is not a directory and not an s3:// URI" >&2
+  exit 1
+fi
+
+echo "This will mirror '$source_loc' to '$dest_loc'."
+echo "Files changed in the source will be uploaded/copied. Files in"
+echo "'$dest_loc' with no match in the source will be DELETED."
+echo ""
+echo "Preview of changes:"
+aws s3 sync "$source_loc" "$dest_loc" --delete --dryrun
+
+echo ""
+read -r -p "Proceed with the above changes? [y/N] " reply
+[[ "$reply" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+
+aws s3 sync "$source_loc" "$dest_loc" --delete
+
+echo "Sync complete."
