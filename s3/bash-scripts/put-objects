@@ -1,0 +1,97 @@
+#! /usr/bin/env bash
+#
+# put-objects — upload one or more files and/or folders to S3, optionally with a prefix.
+#
+# Usage:
+#   ./put-objects [-p prefix] <bucket> <path1> [path2 ...]
+#
+# - Any number of files and/or folders can be given, in any mix.
+# - Folder uploads are flattened: every file (at any nesting depth)
+#   uploads using just its filename — subdirectory structure is NOT
+#   preserved in the key. If two files share a filename, the later
+#   upload silently overwrites the earlier one at the same key.
+#
+# Note: put-object rejects any single file over 5 GB (S3's single-PUT
+# limit) — such files will fail with AWS's own EntityTooLarge error.
+
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
+set -euo pipefail
+export AWS_PAGER=""
+
+prefix=""
+while getopts ":p:h" opt; do
+  case "$opt" in
+    p) prefix="$OPTARG" ;;
+    h) echo "Usage: $0 [-p prefix] <bucket> <path1> [path2 ...]"; exit 0 ;;
+    \?) echo "Unknown option: -$OPTARG" >&2; exit 1 ;;
+    :) echo "Option -$OPTARG requires an argument" >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+[[ -n "$prefix" && "${prefix: -1}" != "/" ]] && prefix="${prefix}/"
+
+[[ $# -lt 2 ]] && { echo "Usage: $0 [-p prefix] <bucket> <path1> [path2 ...]" >&2; exit 1; }
+
+bucket="$1"
+shift
+paths=("$@")
+
+command -v aws    >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+command -v column >/dev/null 2>&1 || { echo "column not found" >&2; exit 1; }
+command -v numfmt >/dev/null 2>&1 || { echo "numfmt not found (coreutils)" >&2; exit 1; }
+
+uploaded=()
+failed=()
+
+upload_one() {
+  local filepath="$1"
+  local key="${prefix}$(basename "$filepath")"
+
+  if error_output="$(aws s3api put-object --bucket "$bucket" --key "$key" --body "$filepath" 2>&1)"; then
+    local size human_size uploaded_at
+    size="$(stat -c%s "$filepath" 2>/dev/null || stat -f%z "$filepath" 2>/dev/null)"
+    human_size="$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null)"
+    [[ -z "$human_size" ]] && human_size="${size}B"
+    uploaded_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "Uploaded: $key"
+    uploaded+=("${key}"$'\t'"${human_size}"$'\t'"${uploaded_at}")
+  else
+    error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+    echo "ERROR: failed to upload '$key'" >&2
+    echo "Reason: $error_output" >&2
+    failed+=("$key")
+  fi
+}
+
+for path in "${paths[@]}"; do
+  path="${path%/}"
+  if [[ -f "$path" ]]; then
+    upload_one "$path"
+  elif [[ -d "$path" ]]; then
+    while IFS= read -r -d '' filepath; do
+      upload_one "$filepath"
+    done < <(find "$path" -type f -print0)
+  else
+    echo "ERROR: '$path' is not a valid file or directory" >&2
+    failed+=("$path")
+  fi
+done
+
+echo ""
+if [[ ${#uploaded[@]} -gt 0 ]]; then
+  {
+    echo -e "Key\tSize\tUploaded At"
+    printf '%s\n' "${uploaded[@]}"
+  } | column -t -s $'\t'
+  echo ""
+fi
+
+echo "Uploaded ${#uploaded[@]} file(s), ${#failed[@]} failed."
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "" >&2
+  echo "Failed:" >&2
+  printf '  - %s\n' "${failed[@]}" >&2
+  exit 1
+fi
