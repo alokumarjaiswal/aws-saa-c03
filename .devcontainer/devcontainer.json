@@ -2,7 +2,9 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
     "ghcr.io/devcontainers/features/aws-cli:1": {},
-    "ghcr.io/devcontainers/features/powershell:2": {}
+    "ghcr.io/devcontainers/features/powershell:2": {
+      "modules": "AWS.Tools.S3"
+    }
   },
   "remoteEnv": {
     "AWS_ACCESS_KEY_ID": "${secrets.AWS_ACCESS_KEY_ID}",
