@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Lists the five most recently created S3 buckets.
+    Lists the 5 most recently created S3 buckets.
 
 .DESCRIPTION
     Calls Get-S3Bucket (a global-endpoint call, no region required for listing)
