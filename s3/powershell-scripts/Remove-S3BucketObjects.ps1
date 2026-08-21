@@ -79,12 +79,12 @@ if ($selectorCount -gt 1) {
 
 # Resolve the target key list.
 if ($All) {
-    $targets = Get-S3Object -BucketName $BucketName -Region $Region |
-        Select-Object -ExpandProperty Key
+    $targets = @(Get-S3Object -BucketName $BucketName -Region $Region |
+        Select-Object -ExpandProperty Key)
 }
 elseif ($Prefix) {
-    $targets = Get-S3Object -BucketName $BucketName -Prefix $Prefix -Region $Region |
-        Select-Object -ExpandProperty Key
+    $targets = @(Get-S3Object -BucketName $BucketName -Prefix $Prefix -Region $Region |
+        Select-Object -ExpandProperty Key)
 }
 else {
     $targets = $Key
