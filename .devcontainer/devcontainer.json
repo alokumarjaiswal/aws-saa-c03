@@ -4,6 +4,9 @@
     "ghcr.io/devcontainers/features/aws-cli:1": {},
     "ghcr.io/devcontainers/features/powershell:2": {
       "modules": "AWS.Tools.S3"
+    },
+    "ghcr.io/devcontainers/features/ruby:2": {
+      "version": "4.0"
     }
   },
   "remoteEnv": {
