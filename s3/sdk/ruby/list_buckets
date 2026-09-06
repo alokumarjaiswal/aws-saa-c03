@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# list_buckets.rb
+#
+# PURPOSE: List the N most recently created S3 buckets in this AWS account
+#          (default N=5). Buckets are account-wide/global, not limited to
+#          AWS_DEFAULT_REGION — see note on bucket_region below.
+# USAGE:   bundle exec ruby list_buckets.rb [-n N] [-v]
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+class ScriptFailure < StandardError; end
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { count: 5, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: list_recent_buckets.rb [options]'
+    opts.on('-n', '--count N', Integer, 'Number of buckets to show (default: 5)') { |v| options[:count] = v }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv)
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def run(options)
+  # ListBuckets defaults to a page size of 10,000 when max_buckets isn't set,
+  # so a single call covers virtually every real-world account. If you ever
+  # need only buckets in a specific region, add: bucket_region: 'ap-south-1'
+  buckets = s3_client.list_buckets.buckets
+  raise ScriptFailure, 'No buckets found in this account.' if buckets.empty?
+
+  recent = buckets.sort_by(&:creation_date).reverse.first(options[:count])
+
+  LOG.info("#{recent.size} most recently created bucket(s):")
+  recent.each_with_index do |bucket, i|
+    puts format('%d. %-40s created %s', i + 1, bucket.name, bucket.creation_date)
+  end
+end
+
+def main
+  options = parse_options(ARGV)
+  run(options)
+rescue ScriptFailure => e
+  LOG.error("Script error: #{e.message}")
+  exit 1
+rescue Aws::Errors::MissingRegionError
+  LOG.error('No AWS region configured. Check AWS_DEFAULT_REGION.')
+  exit 1
+rescue Aws::Errors::MissingCredentialsError
+  LOG.error('No AWS credentials found. Check AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.')
+  exit 1
+rescue Aws::S3::Errors::ServiceError => e
+  LOG.error("AWS S3 error: #{e.code} - #{e.message}")
+  exit 1
+rescue StandardError => e
+  LOG.error("Unexpected error: #{e.message}")
+  LOG.debug(e.backtrace&.join("\n"))
+  exit 1
+end
+
+main if __FILE__ == $PROGRAM_NAME
