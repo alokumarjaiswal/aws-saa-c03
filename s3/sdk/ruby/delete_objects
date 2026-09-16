@@ -1,0 +1,93 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# delete_objects
+#
+# PURPOSE: Delete objects from an S3 bucket — all objects by default, or a
+#          narrower set via --prefix or specific --key flags. Shows what will
+#          be deleted and asks for interactive confirmation before deleting.
+# USAGE:   bundle exec ruby delete_objects BUCKET [-p PREFIX] [-k KEY ...] [-v]
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { prefix: nil, keys: [], verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: delete_objects BUCKET [options]'
+    opts.on('-p', '--prefix PREFIX', 'Only delete keys under this prefix (ignored if --key given)') { |v| options[:prefix] = v }
+    opts.on('-k', '--key KEY', 'Delete this specific key (repeatable)') { |v| options[:keys] << v }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+# Lists keys via auto-pagination when no explicit --key flags were given.
+def list_keys(bucket, prefix)
+  keys = []
+  s3_client.list_objects_v2(bucket: bucket, prefix: prefix).each_page do |page|
+    page.contents.each { |obj| keys << obj.key }
+  end
+  keys
+end
+
+def confirm?(count, bucket)
+  print "Delete #{count} object(s) from #{bucket}? [y/N]: "
+  answer = $stdin.gets&.strip&.downcase
+  %w[y yes].include?(answer)
+end
+
+def delete_keys(bucket, keys)
+  deleted = 0
+  keys.each_slice(1000) do |batch|
+    resp = s3_client.delete_objects(
+      bucket: bucket,
+      delete: { objects: batch.map { |k| { key: k } }, quiet: false }
+    )
+    deleted += resp.deleted.size
+    resp.errors.each { |e| LOG.error("Failed to delete #{e.key}: #{e.code} - #{e.message}") }
+  end
+  deleted
+end
+
+def run(options, bucket)
+  keys = options[:keys].any? ? options[:keys] : list_keys(bucket, options[:prefix])
+  LOG.debug("Resolved #{keys.size} key(s) to consider for deletion.")
+
+  if keys.empty?
+    LOG.info('No objects match the given criteria. Nothing to delete.')
+    return
+  end
+
+  LOG.info("The following #{keys.size} object(s) will be deleted from #{bucket}:")
+  keys.each { |k| puts "  #{k}" }
+
+  unless confirm?(keys.size, bucket)
+    LOG.info('Aborted. No objects were deleted.')
+    return
+  end
+
+  deleted = delete_keys(bucket, keys)
+  LOG.info("Deleted #{deleted} of #{keys.size} object(s).")
+end
+
+def main
+  options = parse_options(ARGV)
+  bucket = ARGV.first
+  run(options, bucket)
+end
+
+main if __FILE__ == $PROGRAM_NAME
