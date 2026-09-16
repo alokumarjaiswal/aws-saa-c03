@@ -1,0 +1,63 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# latest_bucket
+#
+# PURPOSE: Show the single most recently created S3 bucket in this account.
+# USAGE:   bundle exec ruby latest_bucket [-v]
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: latest_bucket [options]'
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv)
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def print_table(headers, rows)
+  widths = headers.each_index.map { |i| ([headers[i].length] + rows.map { |r| r[i].to_s.length }).max }
+  line = ->(cells) { cells.each_with_index.map { |c, i| c.to_s.ljust(widths[i]) }.join('  ') }
+
+  puts line.call(headers)
+  puts widths.map { |w| '-' * w }.join('  ')
+  rows.each { |r| puts line.call(r) }
+end
+
+def run(_options)
+  # max_buckets: 10_000 both covers the full account in one call and is
+  # required to make AWS include bucket_region in the response at all.
+  buckets = s3_client.list_buckets(max_buckets: 10_000).buckets
+  LOG.debug("Fetched #{buckets.size} total bucket(s) from account.")
+
+  latest = buckets.max_by(&:creation_date)
+
+  LOG.info('Latest bucket:')
+  print_table(
+    ['Bucket', 'Region', 'Created'],
+    [[latest&.name, latest&.bucket_region || 'unknown', latest&.creation_date]]
+  )
+end
+
+def main
+  options = parse_options(ARGV)
+  run(options)
+end
+
+main if __FILE__ == $PROGRAM_NAME
