@@ -1,0 +1,80 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# list_objects
+#
+# PURPOSE: List all objects in an S3 bucket (optionally filtered by prefix).
+# USAGE:   bundle exec ruby list_objects BUCKET [-p PREFIX] [-v]
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { prefix: nil, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: list_objects BUCKET [options]'
+    opts.on('-p', '--prefix PREFIX', 'Only list keys under this prefix') { |v| options[:prefix] = v }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def human_size(bytes)
+  return '0 B' if bytes.nil? || bytes.zero?
+
+  units = %w[B KiB MiB GiB TiB]
+  exp = [(Math.log(bytes) / Math.log(1024)).to_i, units.size - 1].min
+  format('%.2f %s', bytes / (1024.0**exp), units[exp])
+end
+
+def print_table(headers, rows)
+  widths = headers.each_index.map { |i| ([headers[i].length] + rows.map { |r| r[i].to_s.length }).max }
+  line = ->(cells) { cells.each_with_index.map { |c, i| c.to_s.ljust(widths[i]) }.join('  ') }
+
+  puts line.call(headers)
+  puts widths.map { |w| '-' * w }.join('  ')
+  rows.each { |r| puts line.call(r) }
+end
+
+def run(options, bucket)
+  # list_objects_v2 caps at 1,000 keys per page — unlike list_buckets, real
+  # buckets do exceed this, so auto-pagination (.each_page) is load-bearing
+  # here, not optional.
+  #
+  # Content-Type isn't part of the ListObjectsV2 response, so getting it
+  # means one head_object call per key (N+1). For a large bucket this is
+  # meaningfully slower than the rest of this repo's scripts — that's an
+  # accepted, known trade-off here, not an oversight.
+  rows = []
+  s3_client.list_objects_v2(bucket: bucket, prefix: options[:prefix]).each_page do |page|
+    page.contents.each do |obj|
+      content_type = s3_client.head_object(bucket: bucket, key: obj.key).content_type
+      rows << [obj.key, content_type, human_size(obj.size), obj.last_modified]
+    end
+  end
+  LOG.debug("Fetched #{rows.size} object(s) from #{bucket} (prefix: #{options[:prefix] || 'none'}).")
+
+  LOG.info("Objects in #{bucket}:")
+  print_table(['Key', 'Type', 'Size', 'Last Modified'], rows)
+end
+
+def main
+  options = parse_options(ARGV)
+  bucket = ARGV.first
+  run(options, bucket)
+end
+
+main if __FILE__ == $PROGRAM_NAME
