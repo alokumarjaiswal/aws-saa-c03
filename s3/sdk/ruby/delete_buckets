@@ -1,0 +1,103 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# delete_buckets
+#
+# PURPOSE: Delete one or more S3 buckets. By default, a non-empty bucket
+#          fails with AWS's own BucketNotEmpty error (no auto-emptying).
+#          Pass --force to empty a bucket's objects first, then delete it.
+# USAGE:   bundle exec ruby delete_buckets BUCKET [BUCKET ...] [-f] [-v]
+#
+# Multiple buckets are processed fail-fast: if one raises, later buckets in
+# the list are never attempted, and earlier ones are already deleted — there
+# is no rollback.
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { force: false, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: delete_buckets BUCKET [BUCKET ...] [options]'
+    opts.on('-f', '--force', 'Empty non-empty buckets before deleting them') { options[:force] = true }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET name(s) behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+# Duplicated from delete_objects.rb on purpose — every script here is
+# self-contained rather than requiring a shared internal library.
+def list_keys(bucket)
+  keys = []
+  s3_client.list_objects_v2(bucket: bucket).each_page do |page|
+    page.contents.each { |obj| keys << obj.key }
+  end
+  keys
+end
+
+def delete_keys(bucket, keys)
+  deleted = 0
+  keys.each_slice(1000) do |batch|
+    resp = s3_client.delete_objects(
+      bucket: bucket,
+      delete: { objects: batch.map { |k| { key: k } }, quiet: false }
+    )
+    deleted += resp.deleted.size
+    resp.errors.each { |e| LOG.error("Failed to delete #{e.key} in #{bucket}: #{e.code} - #{e.message}") }
+  end
+  deleted
+end
+
+def confirm?(buckets, force)
+  puts "The following bucket(s) will be #{force ? 'emptied and ' : ''}deleted:"
+  buckets.each { |b| puts "  #{b}" }
+  print 'Proceed? [y/N]: '
+  answer = $stdin.gets&.strip&.downcase
+  %w[y yes].include?(answer)
+end
+
+def delete_bucket(bucket, force)
+  if force
+    keys = list_keys(bucket)
+    LOG.debug("Emptying #{bucket}: #{keys.size} object(s) to delete first.")
+    delete_keys(bucket, keys) unless keys.empty?
+  end
+
+  s3_client.delete_bucket(bucket: bucket)
+  LOG.info("Deleted bucket: #{bucket}")
+end
+
+def run(options, buckets)
+  if buckets.empty?
+    LOG.info('No bucket name(s) given. Nothing to do.')
+    return
+  end
+
+  unless confirm?(buckets, options[:force])
+    LOG.info('Aborted. No buckets were deleted.')
+    return
+  end
+
+  buckets.each { |b| delete_bucket(b, options[:force]) }
+end
+
+def main
+  options = parse_options(ARGV)
+  buckets = ARGV.dup
+  run(options, buckets)
+end
+
+main if __FILE__ == $PROGRAM_NAME
