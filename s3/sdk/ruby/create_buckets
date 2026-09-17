@@ -1,0 +1,66 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# create_buckets
+#
+# PURPOSE: Create one or more S3 buckets. Defaults to the environment/SDK-
+#          resolved region; pass --region to create in a specific region
+#          instead.
+# USAGE:   bundle exec ruby create_buckets BUCKET [BUCKET ...] [-r REGION] [-v]
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client(region = nil)
+  @s3_client ||= region ? Aws::S3::Client.new(region: region) : Aws::S3::Client.new
+end
+
+def parse_options(argv)
+  options = { region: nil, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: create_buckets BUCKET [BUCKET ...] [options]'
+    opts.on('-r', '--region REGION', 'Region to create the bucket(s) in (default: env/SDK-resolved region)') { |v| options[:region] = v }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET name(s) behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def create_bucket(name, region_override)
+  client = s3_client(region_override)
+  region = client.config.region
+  LOG.debug("Resolved client region: #{region}")
+
+  # S3 requires create_bucket_configuration (with location_constraint) for
+  # every region except us-east-1, which requires it to be omitted entirely.
+  params = { bucket: name }
+  params[:create_bucket_configuration] = { location_constraint: region } unless region == 'us-east-1'
+
+  client.create_bucket(**params)
+  LOG.info("Created bucket: #{name} (region: #{region})")
+end
+
+def run(options, buckets)
+  if buckets.empty?
+    LOG.info('No bucket name(s) given. Nothing to do.')
+    return
+  end
+
+  buckets.each { |b| create_bucket(b, options[:region]) }
+end
+
+def main
+  options = parse_options(ARGV)
+  buckets = ARGV.dup
+  run(options, buckets)
+end
+
+main if __FILE__ == $PROGRAM_NAME
