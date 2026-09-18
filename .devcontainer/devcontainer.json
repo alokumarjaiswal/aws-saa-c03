@@ -7,6 +7,10 @@
     },
     "ghcr.io/devcontainers/features/ruby:2": {
       "version": "4.0"
+    },
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "25",
+      "installMaven": true
     }
   },
   "remoteEnv": {
