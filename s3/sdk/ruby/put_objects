@@ -1,0 +1,115 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# put_objects
+#
+# PURPOSE: Upload one or more local files and/or directories to an S3 bucket,
+#          using Aws::S3::TransferManager for both. Files use #upload_file (managed,
+#          auto-multipart over a size threshold); directories use
+#          #upload_directory. The older Resource#upload_file is deprecated
+#          as of aws-sdk-s3 and is intentionally not used here.
+# USAGE:   bundle exec ruby put_objects BUCKET PATH [PATH ...] [options]
+#          PATH may be a file or a directory, mixed freely in one call.
+#
+# --key only applies when exactly one PATH is given and it's a single file;
+# with multiple paths or any directory, each file's own basename is used.
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def transfer_manager
+  @transfer_manager ||= Aws::S3::TransferManager.new(client: s3_client)
+end
+
+def parse_options(argv)
+  options = { key: nil, content_type: nil, prefix: nil, recursive: false, ignore_failures: false, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: put_objects BUCKET PATH [PATH ...] [options]'
+    opts.on('-k', '--key KEY', 'S3 key (only used for a single explicit file)') { |v| options[:key] = v }
+    opts.on('-t', '--content-type TYPE', 'Content-Type for explicit file uploads (default: unset, S3 uses application/octet-stream)') { |v| options[:content_type] = v }
+    opts.on('-p', '--prefix PREFIX', 'Additional S3 key prefix, nested before the directory\'s own name') { |v| options[:prefix] = v }
+    opts.on('-R', '--recursive', 'Include subdirectories when a PATH is a directory (default: false)') { options[:recursive] = true }
+    opts.on('--ignore-failures', 'For directory uploads: continue past per-file failures instead of stopping') { options[:ignore_failures] = true }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET and PATH(s) behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def upload_file(bucket, path, key, options)
+  LOG.debug("Uploading file #{path} (#{File.size(path)} bytes) to #{bucket}/#{key}")
+
+  upload_opts = { bucket: bucket, key: key }
+  upload_opts[:content_type] = options[:content_type] if options[:content_type]
+
+  transfer_manager.upload_file(path, **upload_opts)
+  LOG.info("Uploaded #{path} to s3://#{bucket}/#{key}")
+end
+
+def upload_directory(bucket, path, options)
+  # upload_directory treats PATH's *contents* as the upload root by default
+  # (e.g. uploading /test/images gives keys like sample.jpg, not
+  # images/sample.jpg) — that's documented SDK behavior, not a bug, but not
+  # what we want here. We prepend the directory's own basename (combined
+  # with any user --prefix) so the folder itself is preserved in S3, not
+  # just what's inside it.
+  dir_name = File.basename(File.expand_path(path))
+  s3_prefix = [options[:prefix], dir_name].compact.join('/')
+
+  LOG.debug("Uploading directory #{path} to #{bucket} (recursive: #{options[:recursive]}, prefix: #{s3_prefix})")
+
+  result = transfer_manager.upload_directory(
+    path,
+    bucket: bucket,
+    recursive: options[:recursive],
+    ignore_failure: options[:ignore_failures],
+    s3_prefix: "#{s3_prefix}/"
+  )
+
+  LOG.info("Directory upload of #{path}: #{result[:completed_uploads]} completed, #{result[:failed_uploads]} failed.")
+  Array(result[:errors]).each { |e| LOG.error("Failed: #{e}") } if options[:ignore_failures]
+end
+
+def run(options, bucket, paths)
+  if paths.empty?
+    LOG.info('No file(s)/folder(s) given. Nothing to do.')
+    return
+  end
+
+  single_file_mode = paths.size == 1 && File.file?(paths.first)
+
+  paths.each do |path|
+    unless File.exist?(path)
+      LOG.error("Path not found: #{path}")
+      next
+    end
+
+    if File.directory?(path)
+      upload_directory(bucket, path, options)
+    else
+      key = single_file_mode ? (options[:key] || File.basename(path)) : File.basename(path)
+      upload_file(bucket, path, key, options)
+    end
+  end
+end
+
+def main
+  options = parse_options(ARGV)
+  bucket = ARGV.shift
+  paths = ARGV.dup
+  run(options, bucket, paths)
+end
+
+main if __FILE__ == $PROGRAM_NAME
