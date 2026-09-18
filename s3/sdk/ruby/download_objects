@@ -1,0 +1,88 @@
+#! /usr/bin/env ruby
+# frozen_string_literal: true
+#
+# download_objects
+#
+# PURPOSE: Download objects from an S3 bucket to a local directory, using
+#          Aws::S3::TransferManager. Two modes:
+#            - Explicit key(s) via -k/--key (repeatable): downloads via
+#              #download_file, preserving the full key path locally under
+#              DEST_DIR (e.g. key "photos/img.jpg" -> DEST_DIR/photos/img.jpg).
+#            - No --key given: downloads the whole bucket (or a --prefix
+#              subset) via #download_directory, which recreates the S3 key
+#              structure as nested local folders automatically.
+# USAGE:   bundle exec ruby download_objects BUCKET DEST_DIR [options]
+#
+# --prefix is ignored if any --key is given. Existing local files with the same 
+# name are overwritten without warning, matching S3's own overwrite semantics.
+
+require 'bundler/setup'
+require 'aws-sdk-s3'
+require 'optparse'
+require 'logger'
+require 'fileutils'
+
+LOG = Logger.new($stdout).tap { |l| l.level = Logger::INFO }
+
+def s3_client
+  @s3_client ||= Aws::S3::Client.new
+end
+
+def transfer_manager
+  @transfer_manager ||= Aws::S3::TransferManager.new(client: s3_client)
+end
+
+def parse_options(argv)
+  options = { keys: [], prefix: nil, ignore_failures: false, verbose: false }
+
+  parser = OptionParser.new do |opts|
+    opts.banner = 'Usage: download_objects BUCKET DEST_DIR [options]'
+    opts.on('-k', '--key KEY', 'Download this specific key (repeatable)') { |v| options[:keys] << v }
+    opts.on('-p', '--prefix PREFIX', 'Only download keys under this prefix (ignored if --key given)') { |v| options[:prefix] = v }
+    opts.on('--ignore-failures', 'For whole-bucket downloads: continue past per-file failures instead of stopping') { options[:ignore_failures] = true }
+    opts.on('-v', '--verbose', 'Enable verbose logging') { options[:verbose] = true }
+    opts.on('-h', '--help', 'Show this help') { puts opts; exit 0 }
+  end
+
+  parser.parse!(argv) # leaves BUCKET and DEST_DIR behind in argv
+  LOG.level = Logger::DEBUG if options[:verbose]
+  options
+end
+
+def download_key(bucket, dest_dir, key)
+  local_path = File.join(dest_dir, key)
+  FileUtils.mkdir_p(File.dirname(local_path))
+
+  LOG.debug("Downloading s3://#{bucket}/#{key} to #{local_path}")
+  transfer_manager.download_file(local_path, bucket: bucket, key: key)
+  LOG.info("Downloaded s3://#{bucket}/#{key} to #{local_path}")
+end
+
+def download_all(bucket, dest_dir, options)
+  LOG.debug("Downloading bucket #{bucket} (prefix: #{options[:prefix] || 'none'}) to #{dest_dir}")
+
+  dl_opts = { ignore_failure: options[:ignore_failures] }
+  dl_opts[:s3_prefix] = options[:prefix] if options[:prefix]
+
+  result = transfer_manager.download_directory(dest_dir, bucket: bucket, **dl_opts)
+
+  LOG.info("Directory download: #{result[:completed_downloads]} completed, #{result[:failed_downloads]} failed.")
+  Array(result[:errors]).each { |e| LOG.error("Failed: #{e}") } if options[:ignore_failures]
+end
+
+def run(options, bucket, dest_dir)
+  if options[:keys].any?
+    options[:keys].each { |k| download_key(bucket, dest_dir, k) }
+  else
+    download_all(bucket, dest_dir, options)
+  end
+end
+
+def main
+  options = parse_options(ARGV)
+  bucket, dest_dir, *extra = ARGV
+  LOG.warn("Ignoring unexpected extra argument(s): #{extra.join(', ')} (did you mean to repeat -k for each key?)") unless extra.empty?
+  run(options, bucket, dest_dir)
+end
+
+main if __FILE__ == $PROGRAM_NAME
