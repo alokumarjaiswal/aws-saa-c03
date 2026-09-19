@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 #
-# list-buckets — list the 5 most recently created S3 buckets
+# list-recent-buckets — list the 5 most recently created S3 buckets
 
 # export PS4='+ ${BASH_SOURCE}:${LINENO}: '
 # set -x
