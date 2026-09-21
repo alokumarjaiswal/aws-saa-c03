@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Generic CloudFormation status/inspection script — works with ANY stack.
+#
+# Usage:
+#   ./status.sh <stack-name>
+#
+# Example:
+#   ./status.sh secure-bucket-stack
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "Usage: ./status.sh <stack-name>"
+  exit 1
+fi
+
+STACK_NAME="$1"
+
+echo "=== Stack status ==="
+aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --query "Stacks[0].{Status:StackStatus,Created:CreationTime,Updated:LastUpdatedTime}" \
+  --output table
+
+echo ""
+echo "=== Resources in this stack ==="
+aws cloudformation list-stack-resources \
+  --stack-name "$STACK_NAME" \
+  --query "StackResourceSummaries[].{Logical:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Physical:PhysicalResourceId}" \
+  --output table
+
+echo ""
+echo "=== Outputs ==="
+aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --query "Stacks[0].Outputs" \
+  --output table
+
+echo ""
+echo "=== Last 10 stack events (most recent first) ==="
+aws cloudformation describe-stack-events \
+  --stack-name "$STACK_NAME" \
+  --max-items 10 \
+  --query "StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}" \
+  --output table

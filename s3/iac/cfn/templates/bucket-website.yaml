@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  A public S3 bucket configured for static website hosting:
+  website hosting enabled, public-read access allowed for GET requests.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: >
+      Globally unique name for the bucket. Example: my-portfolio-site-2026
+  IndexDocument:
+    Type: String
+    Default: index.html
+    Description: The default page served at the site's root
+
+Resources:
+  # Dedicated bucket to receive access logs (see bucket-secure.yaml for why
+  # this must be a separate bucket, not self-logging).
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketName}-access-logs'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub '${LoggingBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !GetAtt WebsiteBucket.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LoggingBucket.Arn
+              - !Sub '${LoggingBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  # NOTE ON cfn-guard: PublicAccessBlockConfiguration is intentionally all
+  # `false` here. This bucket serves a public static website - setting these
+  # to `true` (as the generic S3_BUCKET_*_PUBLIC_*_PROHIBITED rules want)
+  # would block the bucket policy below that makes pages publicly readable,
+  # breaking the website entirely. This is a deliberate, accepted exception,
+  # not a gap to fix. (The AWS-recommended way to avoid public buckets
+  # altogether is CloudFront + Origin Access Control in front of a fully
+  # private bucket - a larger architecture than a single bucket resource.)
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      WebsiteConfiguration:
+        IndexDocument: !Ref IndexDocument
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: website-bucket-access-logs/
+
+  # NOTE ON cfn-guard: S3_BUCKET_SSL_REQUESTS_ONLY is intentionally NOT
+  # enforced on this bucket. Amazon S3 website endpoints
+  # (http://bucket.s3-website-region.amazonaws.com) do not support HTTPS at
+  # all - denying non-SSL requests here would deny 100% of traffic to the
+  # site, since there is no HTTPS traffic to allow through. Enforcing SSL
+  # requires putting CloudFront in front of the bucket instead (see the note
+  # on the PublicAccessBlockConfiguration below).
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+
+Outputs:
+  BucketName:
+    Description: Name of the created bucket
+    Value: !Ref WebsiteBucket
+  WebsiteURL:
+    Description: URL of the static website
+    Value: !GetAtt WebsiteBucket.WebsiteURL
+  LoggingBucketName:
+    Description: Name of the bucket receiving access logs
+    Value: !Ref LoggingBucket

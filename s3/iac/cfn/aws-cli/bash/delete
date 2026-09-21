@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Generic CloudFormation delete script — works with ANY stack.
+#
+# IMPORTANT: CloudFormation change sets only support CREATE, UPDATE, and
+# IMPORT — there is no native "preview a deletion" change set type. The
+# closest equivalent is listing the stack's current resources before
+# deleting, since deleting the stack deletes exactly what's listed here.
+#
+# Usage:
+#   ./delete.sh <stack-name> [--yes]
+#
+# Examples:
+#   ./delete.sh secure-bucket-stack
+#   ./delete.sh website-stack --yes
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "Usage: ./delete.sh <stack-name> [--yes]"
+  exit 1
+fi
+
+STACK_NAME="$1"
+AUTO_APPROVE=false
+if [ "${2:-}" == "--yes" ]; then
+  AUTO_APPROVE=true
+fi
+
+echo "=== Resources currently in stack '$STACK_NAME' (all will be deleted) ==="
+aws cloudformation list-stack-resources \
+  --stack-name "$STACK_NAME" \
+  --query "StackResourceSummaries[].{Logical:LogicalResourceId,Type:ResourceType,Physical:PhysicalResourceId}" \
+  --output table
+
+echo ""
+if [ "$AUTO_APPROVE" = false ]; then
+  read -r -p "Delete stack '$STACK_NAME' and all resources above? [y/N] " CONFIRM
+  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "Aborted. Nothing was deleted."
+    exit 0
+  fi
+fi
+
+echo "Deleting stack '$STACK_NAME'..."
+aws cloudformation delete-stack --stack-name "$STACK_NAME"
+
+echo "Waiting for deletion to complete (this can take a minute)..."
+aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+
+echo "Stack '$STACK_NAME' deleted."

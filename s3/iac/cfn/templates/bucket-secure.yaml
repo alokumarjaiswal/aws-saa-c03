@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  A private S3 bucket configured for secure data storage: versioning enabled, server-side encryption enabled, all public access blocked.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: |
+      Globally unique name for the bucket (S3 bucket names must be unique across ALL of AWS, not just your account). Example: my-company-app-data-2026
+
+Resources:
+  # Dedicated bucket to receive access logs. A bucket must never log into
+  # itself (AWS explicitly advises against this - it creates a logging loop).
+  # NOTE ON cfn-guard: this bucket intentionally has no LoggingConfiguration.
+  # A logging destination bucket must not log into itself or another bucket -
+  # AWS explicitly advises against this (it creates a runaway logging loop).
+  # The S3_BUCKET_LOGGING_ENABLED finding on this resource is a known,
+  # accepted exception, not a gap to fix.
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${BucketName}-access-logs
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Grants the S3 log delivery service permission to write into the logging
+  # bucket, scoped to only accept logs originating from SecureBucket. Also
+  # denies any request made over plain HTTP (enforces SSL/TLS in transit).
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${LoggingBucket.Arn}/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !GetAtt SecureBucket.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt LoggingBucket.Arn
+              - !Sub ${LoggingBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  SecureBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: secure-bucket-access-logs/
+
+  # Denies any request to SecureBucket made over plain HTTP.
+  SecureBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SecureBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SecureBucket.Arn
+              - !Sub ${SecureBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+Outputs:
+  BucketName:
+    Description: Name of the created bucket
+    Value: !Ref SecureBucket
+  BucketArn:
+    Description: ARN of the created bucket
+    Value: !GetAtt SecureBucket.Arn
+  LoggingBucketName:
+    Description: Name of the bucket receiving access logs
+    Value: !Ref LoggingBucket
