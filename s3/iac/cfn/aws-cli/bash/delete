@@ -1,5 +1,6 @@
-#!/usr/bin/env bash
-# Generic CloudFormation delete script — works with ANY stack.
+#! /usr/bin/env bash
+#
+# delete — generic CloudFormation delete script, works with any stack.
 #
 # IMPORTANT: CloudFormation change sets only support CREATE, UPDATE, and
 # IMPORT — there is no native "preview a deletion" change set type. The
@@ -10,41 +11,69 @@
 #   ./delete.sh <stack-name> [--yes]
 #
 # Examples:
+#
 #   ./delete.sh secure-bucket-stack
+#
+#   # --yes skips the confirmation prompt and deletes immediately
 #   ./delete.sh website-stack --yes
+#
+#   # If the bucket has versioning enabled (like secure-bucket-stack) and
+#   # already has objects in it, this will FAIL with a "bucket not empty"
+#   # error - CloudFormation refuses to delete a non-empty bucket, and a
+#   # normal `aws s3 rm --recursive` does not remove old object versions.
+#   # Empty it first with something like:
+#   #   aws s3api delete-objects --bucket <bucket-name> --delete "$(aws s3api \
+#   #     list-object-versions --bucket <bucket-name> \
+#   #     --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')"
 
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
 set -euo pipefail
+export AWS_PAGER=""
 
-if [ $# -lt 1 ]; then
-  echo "Usage: ./delete.sh <stack-name> [--yes]"
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <stack-name> [--yes]" >&2
+  echo "" >&2
+  echo "Example: $0 secure-bucket-stack" >&2
+  echo "Example: $0 website-stack --yes" >&2
   exit 1
 fi
 
-STACK_NAME="$1"
-AUTO_APPROVE=false
-if [ "${2:-}" == "--yes" ]; then
-  AUTO_APPROVE=true
-fi
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
 
-echo "=== Resources currently in stack '$STACK_NAME' (all will be deleted) ==="
+stack_name="$1"
+auto_approve=false
+[[ "${2:-}" == "--yes" ]] && auto_approve=true
+
+echo "=== Resources currently in stack '$stack_name' (all will be deleted) ==="
 aws cloudformation list-stack-resources \
-  --stack-name "$STACK_NAME" \
+  --stack-name "$stack_name" \
   --query "StackResourceSummaries[].{Logical:LogicalResourceId,Type:ResourceType,Physical:PhysicalResourceId}" \
   --output table
 
 echo ""
-if [ "$AUTO_APPROVE" = false ]; then
-  read -r -p "Delete stack '$STACK_NAME' and all resources above? [y/N] " CONFIRM
-  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+if [[ "$auto_approve" == false ]]; then
+  read -r -p "Delete stack '$stack_name' and all resources above? [y/N] " reply
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
     echo "Aborted. Nothing was deleted."
     exit 0
   fi
 fi
 
-echo "Deleting stack '$STACK_NAME'..."
-aws cloudformation delete-stack --stack-name "$STACK_NAME"
+echo "Deleting stack '$stack_name'..."
+if ! error_output="$(aws cloudformation delete-stack --stack-name "$stack_name" 2>&1)"; then
+  error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+  echo "ERROR: failed to delete stack '$stack_name'" >&2
+  echo "Reason: $error_output" >&2
+  exit 1
+fi
 
 echo "Waiting for deletion to complete (this can take a minute)..."
-aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+if ! error_output="$(aws cloudformation wait stack-delete-complete --stack-name "$stack_name" 2>&1)"; then
+  error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+  echo "ERROR: stack deletion did not complete successfully" >&2
+  echo "Reason: $error_output" >&2
+  exit 1
+fi
 
-echo "Stack '$STACK_NAME' deleted."
+echo "Stack '$stack_name' deleted."

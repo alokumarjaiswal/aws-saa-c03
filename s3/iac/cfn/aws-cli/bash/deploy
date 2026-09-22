@@ -1,141 +1,161 @@
-#!/usr/bin/env bash
-# Generic CloudFormation deploy script — works with ANY template.
-# Now previews changes via a CloudFormation change set before applying them.
+#! /usr/bin/env bash
+#
+# deploy — generic CloudFormation deploy script, works with any template.
+# Previews changes via a CloudFormation change set before applying them.
 #
 # Usage:
-#   ./deploy.sh <template-file> <stack-name> [ParamKey=Value ...] [--yes]
+#   ./deploy <template-file> <stack-name> [ParamKey=Value ...] [--yes]
 #
 # Examples:
-#   ./deploy.sh templates/bucket-secure.yaml secure-bucket-stack BucketName=my-unique-secure-bucket-2026
-#   ./deploy.sh templates/bucket-website.yaml website-stack BucketName=my-unique-site-2026 --yes
+#   ./deploy templates/bucket-secure.yaml secure-bucket-stack BucketName=my-unique-secure-bucket-2026
+#   ./deploy templates/bucket-website.yaml website-stack BucketName=my-unique-site-2026 --yes
+#   ./deploy.sh templates/bucket-website.yaml website-stack BucketName=my-unique-site-2026 IndexDocument=home.html
 #
 # --yes skips the confirmation prompt and applies the change set immediately
-# (useful for CI/CD; NOT the default, since the point of this script is to
-# let you see what will happen before it happens).
 
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
 set -euo pipefail
+export AWS_PAGER=""
 
-if [ $# -lt 2 ]; then
-  echo "Usage: ./deploy.sh <template-file> <stack-name> [ParamKey=Value ...] [--yes]"
-  exit 1
-fi
+[[ $# -lt 2 ]] && { echo "Usage: $0 <template-file> <stack-name> [ParamKey=Value ...] [--yes]" >&2; exit 1; }
 
-TEMPLATE_FILE="$1"
-STACK_NAME="$2"
+template_file="$1"
+stack_name="$2"
 shift 2
 
-AUTO_APPROVE=false
-PARAM_ARGS=()
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+
+auto_approve=false
+param_args=()
 for arg in "$@"; do
-  if [ "$arg" == "--yes" ]; then
-    AUTO_APPROVE=true
+  if [[ "$arg" == "--yes" ]]; then
+    auto_approve=true
   else
-    KEY="${arg%%=*}"
-    VAL="${arg#*=}"
-    PARAM_ARGS+=("ParameterKey=${KEY},ParameterValue=${VAL}")
+    key="${arg%%=*}"
+    val="${arg#*=}"
+    param_args+=("ParameterKey=${key},ParameterValue=${val}")
   fi
 done
 
-if [ ! -f "$TEMPLATE_FILE" ]; then
-  echo "Error: template file '$TEMPLATE_FILE' not found."
+[[ -f "$template_file" ]] || { echo "ERROR: template file '$template_file' not found" >&2; exit 1; }
+
+echo "Validating template: $template_file"
+if ! error_output="$(aws cloudformation validate-template --template-body "file://${template_file}" 2>&1)"; then
+  error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+  echo "ERROR: template validation failed" >&2
+  echo "Reason: $error_output" >&2
   exit 1
 fi
 
-echo "Validating template: $TEMPLATE_FILE"
-aws cloudformation validate-template --template-body "file://${TEMPLATE_FILE}" > /dev/null
-
 # A new stack needs ChangeSetType=CREATE; an existing one needs UPDATE.
 # describe-stacks fails (non-zero exit) if the stack doesn't exist yet.
-if aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
-  CHANGE_SET_TYPE="UPDATE"
+if aws cloudformation describe-stacks --stack-name "$stack_name" >/dev/null 2>&1; then
+  change_set_type="UPDATE"
 else
-  CHANGE_SET_TYPE="CREATE"
+  change_set_type="CREATE"
 fi
 
-CHANGE_SET_NAME="preview-$(date +%Y%m%d%H%M%S)"
+change_set_name="preview-$(date +%Y%m%d%H%M%S)"
 
-echo "Creating change set '$CHANGE_SET_NAME' ($CHANGE_SET_TYPE) for stack '$STACK_NAME'..."
+echo "Creating change set '$change_set_name' ($change_set_type) for stack '$stack_name'..."
 
-CREATE_ARGS=(
-  --stack-name "$STACK_NAME"
-  --change-set-name "$CHANGE_SET_NAME"
-  --change-set-type "$CHANGE_SET_TYPE"
-  --template-body "file://${TEMPLATE_FILE}"
+create_args=(
+  --stack-name "$stack_name"
+  --change-set-name "$change_set_name"
+  --change-set-type "$change_set_type"
+  --template-body "file://${template_file}"
   --capabilities CAPABILITY_NAMED_IAM
 )
-if [ ${#PARAM_ARGS[@]} -gt 0 ]; then
-  CREATE_ARGS+=(--parameters "${PARAM_ARGS[@]}")
-fi
+[[ ${#param_args[@]} -gt 0 ]] && create_args+=(--parameters "${param_args[@]}")
 
-aws cloudformation create-change-set "${CREATE_ARGS[@]}" > /dev/null
+if ! error_output="$(aws cloudformation create-change-set "${create_args[@]}" 2>&1)"; then
+  error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+  echo "ERROR: failed to create change set" >&2
+  echo "Reason: $error_output" >&2
+  exit 1
+fi
 
 echo "Waiting for change set to finish computing..."
 # Don't let `set -e` kill the script here — a change set with zero diffs
 # reports FAILED, which is an expected outcome we handle below, not an error.
 aws cloudformation wait change-set-create-complete \
-  --stack-name "$STACK_NAME" \
-  --change-set-name "$CHANGE_SET_NAME" 2>/dev/null || true
+  --stack-name "$stack_name" \
+  --change-set-name "$change_set_name" 2>/dev/null || true
 
-STATUS=$(aws cloudformation describe-change-set \
-  --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME" \
-  --query "Status" --output text)
+status="$(aws cloudformation describe-change-set \
+  --stack-name "$stack_name" --change-set-name "$change_set_name" \
+  --query "Status" --output text)"
 
-if [ "$STATUS" == "FAILED" ]; then
-  REASON=$(aws cloudformation describe-change-set \
-    --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME" \
-    --query "StatusReason" --output text)
+if [[ "$status" == "FAILED" ]]; then
+  reason="$(aws cloudformation describe-change-set \
+    --stack-name "$stack_name" --change-set-name "$change_set_name" \
+    --query "StatusReason" --output text)"
 
   aws cloudformation delete-change-set \
-    --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME" 2>/dev/null || true
+    --stack-name "$stack_name" --change-set-name "$change_set_name" 2>/dev/null || true
 
-  if [[ "$REASON" == *"didn't contain changes"* || "$REASON" == *"No updates"* ]]; then
-    echo "No changes detected — '$STACK_NAME' is already up to date."
+  if [[ "$reason" == *"didn't contain changes"* || "$reason" == *"No updates"* ]]; then
+    echo "No changes detected — '$stack_name' is already up to date."
     exit 0
   else
-    echo "Change set failed: $REASON"
+    echo "ERROR: change set failed" >&2
+    echo "Reason: $reason" >&2
     exit 1
   fi
 fi
 
 echo ""
-echo "=== Proposed changes for '$STACK_NAME' ==="
+echo "=== Proposed changes for '$stack_name' ==="
 aws cloudformation describe-change-set \
-  --stack-name "$STACK_NAME" \
-  --change-set-name "$CHANGE_SET_NAME" \
+  --stack-name "$stack_name" \
+  --change-set-name "$change_set_name" \
   --query "Changes[].ResourceChange.{Action:Action,Resource:LogicalResourceId,Type:ResourceType,Replacement:Replacement}" \
   --output table
 echo ""
 
-if [ "$AUTO_APPROVE" = false ]; then
-  read -r -p "Apply these changes? [y/N] " CONFIRM
+if [[ "$auto_approve" == false ]]; then
+  read -r -p "Apply these changes? [y/N] " reply
 else
-  CONFIRM="y"
+  reply="y"
 fi
 
-if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+if [[ "$reply" =~ ^[Yy]$ ]]; then
   echo "Executing change set..."
-  aws cloudformation execute-change-set \
-    --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME"
+  if ! error_output="$(aws cloudformation execute-change-set \
+    --stack-name "$stack_name" --change-set-name "$change_set_name" 2>&1)"; then
+    error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+    echo "ERROR: failed to execute change set" >&2
+    echo "Reason: $error_output" >&2
+    exit 1
+  fi
 
   echo "Waiting for stack operation to complete..."
-  if [ "$CHANGE_SET_TYPE" == "CREATE" ]; then
-    aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME"
+  if [[ "$change_set_type" == "CREATE" ]]; then
+    waiter="stack-create-complete"
   else
-    aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME"
+    waiter="stack-update-complete"
+  fi
+
+  if ! error_output="$(aws cloudformation wait "$waiter" --stack-name "$stack_name" 2>&1)"; then
+    error_output="$(echo "$error_output" | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+    echo "ERROR: stack operation did not complete successfully" >&2
+    echo "Reason: $error_output" >&2
+    exit 1
   fi
 
   echo ""
   echo "Deployment complete. Stack outputs:"
   aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" --query "Stacks[0].Outputs" --output table
+    --stack-name "$stack_name" --query "Stacks[0].Outputs" --output table
 else
   echo "Aborted — cleaning up change set. No changes were applied."
   aws cloudformation delete-change-set \
-    --stack-name "$STACK_NAME" --change-set-name "$CHANGE_SET_NAME"
+    --stack-name "$stack_name" --change-set-name "$change_set_name"
 
   # A CREATE-type change set on a brand-new stack leaves behind an empty
   # stack shell in REVIEW_IN_PROGRESS state. Clean that up too, or it lingers.
-  if [ "$CHANGE_SET_TYPE" == "CREATE" ]; then
-    aws cloudformation delete-stack --stack-name "$STACK_NAME"
+  if [[ "$change_set_type" == "CREATE" ]]; then
+    aws cloudformation delete-stack --stack-name "$stack_name"
   fi
 fi

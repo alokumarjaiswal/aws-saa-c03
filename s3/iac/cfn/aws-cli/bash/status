@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
-# Generic CloudFormation status/inspection script — works with ANY stack.
+#! /usr/bin/env bash
+#
+# status.sh — generic CloudFormation status/inspection script, works with
+# any stack.
 #
 # Usage:
 #   ./status.sh <stack-name>
@@ -7,39 +9,41 @@
 # Example:
 #   ./status.sh secure-bucket-stack
 
+export PS4='+ ${BASH_SOURCE}:${LINENO}: '
+# set -xeuo pipefail
 set -euo pipefail
+export AWS_PAGER=""
 
-if [ $# -lt 1 ]; then
-  echo "Usage: ./status.sh <stack-name>"
-  exit 1
-fi
+[[ $# -lt 1 ]] && { echo "Usage: $0 <stack-name>" >&2; exit 1; }
 
-STACK_NAME="$1"
+command -v aws >/dev/null 2>&1 || { echo "aws CLI not found" >&2; exit 1; }
+
+stack_name="$1"
 
 echo "=== Stack status ==="
 aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
+  --stack-name "$stack_name" \
   --query "Stacks[0].{Status:StackStatus,Created:CreationTime,Updated:LastUpdatedTime}" \
   --output table
 
 echo ""
 echo "=== Resources in this stack ==="
 aws cloudformation list-stack-resources \
-  --stack-name "$STACK_NAME" \
+  --stack-name "$stack_name" \
   --query "StackResourceSummaries[].{Logical:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Physical:PhysicalResourceId}" \
   --output table
 
 echo ""
 echo "=== Outputs ==="
 aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
+  --stack-name "$stack_name" \
   --query "Stacks[0].Outputs" \
   --output table
 
 echo ""
 echo "=== Last 10 stack events (most recent first) ==="
 aws cloudformation describe-stack-events \
-  --stack-name "$STACK_NAME" \
+  --stack-name "$stack_name" \
   --max-items 10 \
   --query "StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}" \
   --output table
