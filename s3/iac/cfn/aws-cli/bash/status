@@ -8,6 +8,7 @@
 #
 # Example:
 #   ./status.sh secure-bucket-stack
+#   ./status.sh website-stack
 
 export PS4='+ ${BASH_SOURCE}:${LINENO}: '
 # set -xeuo pipefail
