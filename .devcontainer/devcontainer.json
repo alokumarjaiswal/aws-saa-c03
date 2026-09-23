@@ -2,6 +2,7 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
     "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/devcontainers/features/node:2": {},
     "ghcr.io/devcontainers/features/terraform:1": {
       "version": "latest"
     },
@@ -16,6 +17,7 @@
       "installMaven": true
     }
   },
+  "postCreateCommand": "npm install -g aws-cdk",
   "remoteEnv": {
     "AWS_ACCESS_KEY_ID": "${secrets.AWS_ACCESS_KEY_ID}",
     "AWS_SECRET_ACCESS_KEY": "${secrets.AWS_SECRET_ACCESS_KEY}",
