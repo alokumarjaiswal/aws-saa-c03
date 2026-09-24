@@ -1,17 +1,44 @@
-// import * as cdk from 'aws-cdk-lib/core';
-// import { Template } from 'aws-cdk-lib/assertions';
-// import * as Typescript from '../lib/typescript-stack';
+import * as cdk from 'aws-cdk-lib';
+import { Template } from 'aws-cdk-lib/assertions';
+import { TypescriptStack } from '../lib/typescript-stack';
 
-// example test. To run these tests, uncomment this file along with the
-// example resource in lib/typescript-stack.ts
-test('SQS Queue Created', () => {
-//   const app = new cdk.App();
-//     // WHEN
-//   const stack = new Typescript.TypescriptStack(app, 'MyTestStack');
-//     // THEN
-//   const template = Template.fromStack(stack);
+test('creates the public website and private locked-down buckets', () => {
+	const app = new cdk.App();
+	const stack = new TypescriptStack(app, 'MyTestStack');
+	const template = Template.fromStack(stack);
 
-//   template.hasResourceProperties('AWS::SQS::Queue', {
-//     VisibilityTimeout: 300
-//   });
+	template.resourceCountIs('AWS::S3::Bucket', 2);
+
+	template.hasResourceProperties('AWS::S3::Bucket', {
+		WebsiteConfiguration: {
+			ErrorDocument: 'error.html',
+			IndexDocument: 'index.html',
+		},
+		PublicAccessBlockConfiguration: {
+			BlockPublicAcls: true,
+			BlockPublicPolicy: false,
+			IgnorePublicAcls: true,
+			RestrictPublicBuckets: false,
+		},
+	});
+
+	template.hasResourceProperties('AWS::S3::Bucket', {
+		BucketEncryption: {
+			ServerSideEncryptionConfiguration: [
+				{
+					ServerSideEncryptionByDefault: {
+						SSEAlgorithm: 'AES256',
+					},
+				},
+			],
+		},
+		VersioningConfiguration: {
+			Status: 'Enabled',
+		},
+	});
+
+	template.hasOutput('PublicWebsiteBucketName', {});
+	template.hasOutput('PublicWebsiteBucketUrl', {});
+	template.hasOutput('PrivateLockedBucketName', {});
+	template.hasOutput('PrivateLockedBucketArn', {});
 });
