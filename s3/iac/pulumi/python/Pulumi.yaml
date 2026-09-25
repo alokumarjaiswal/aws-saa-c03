@@ -1,0 +1,11 @@
+name: python
+description: A learning-first project with two opposite S3 buckets
+runtime:
+  name: python
+  options:
+    toolchain: pip
+    virtualenv: venv
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: aws-python
